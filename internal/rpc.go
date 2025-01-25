@@ -53,10 +53,6 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error
 		r.Role = Follower
 	}
 
-	if (r.VotedFor == "" || r.VotedFor == args.CandidateId) && args.LastLogIndex >= r. {
-
-	}
-
 	return nil
 }
 
