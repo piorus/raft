@@ -11,8 +11,10 @@ import (
 )
 
 func startServer(port string, errChan chan<- error) {
+	fmt.Printf("starting server :%s\n", port)
 	l, err := net.Listen("tcp", ":"+port)
 	if err != nil {
+		fmt.Printf("err: %s\n", err.Error())
 		errChan <- err
 		return
 	}
@@ -27,19 +29,21 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	dbConn, err := internal.NewBoltDatabaseConn("log.db")
+	dbConn, err := internal.NewBoltDatabaseConn(fmt.Sprintf("log-%s.db", cfg.Port))
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln("failed to create BoltDatabaseConn. Error was:", err)
 	}
 
 	serverId, err := dbConn.GetServerId()
 	if err != nil {
 		log.Fatalln(err)
 	}
-	fmt.Printf("serverId: %s\n", serverId)
 
-	raft := internal.NewRaft(serverId, dbConn)
-	go raft.StartElectionTimer(1000 * time.Millisecond)
+	var logs []*internal.Log
+	metadata := internal.Metadata{}
+
+	raft := internal.NewRaft(logs, &metadata, cfg, dbConn)
+	go raft.StartElectionTimer()
 	go raft.WaitForElection()
 
 	err = rpc.Register(raft)
@@ -51,26 +55,6 @@ func main() {
 	errChan := make(chan error)
 	go startServer(cfg.Port, errChan)
 	time.Sleep(time.Millisecond * 1500)
-
-	var clients []*rpc.Client
-
-	for _, ip := range cfg.ServerIps {
-		client, err := rpc.DialHTTP("tcp", ip)
-		fmt.Printf("successfully dialed client: %s\n", ip)
-
-		if err != nil {
-			log.Fatalln("error dialing ", ip, " error was: ", err)
-		}
-		clients = append(clients, client)
-	}
-
-	//args := internal.RequestVoteArgs{Term: raft.CurrentTerm}
-	//var reply internal.RequestVoteReply
-	//
-	//err = clients[0].Call("Raft.RequestVote", &args, &reply)
-	//if err != nil {
-	//	log.Fatalln(err)
-	//}
 
 	err = <-errChan
 	if err != nil {

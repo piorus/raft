@@ -3,7 +3,9 @@ package internal
 import (
 	"flag"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 )
 
 type ServerIps []string
@@ -17,11 +19,6 @@ func (s *ServerIps) String() string {
 	return strings.Join(*s, ",")
 }
 
-type Configuration struct {
-	Port      string
-	ServerIps ServerIps
-}
-
 func ParseConfiguration() (*Configuration, error) {
 	var serverIps ServerIps
 	var port string
@@ -32,8 +29,20 @@ func ParseConfiguration() (*Configuration, error) {
 	flag.Parse()
 
 	if port == "" {
-		return nil, fmt.Errorf("--Port is required")
+		return nil, fmt.Errorf("--port is required")
 	}
 
-	return &Configuration{Port: port, ServerIps: serverIps}, nil
+	electionTimeoutRaw := os.Getenv("ELECTION_TIMEOUT")
+
+	if electionTimeoutRaw == "" {
+		electionTimeoutRaw = "1s"
+	}
+
+	electionTimeout, err := time.ParseDuration(electionTimeoutRaw)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &Configuration{Port: port, ServerIps: serverIps, electionTimeout: electionTimeout}, nil
 }

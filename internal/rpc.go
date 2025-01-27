@@ -42,26 +42,27 @@ type InstallSnapshotReply struct {
 }
 
 func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error {
-	fmt.Printf("[RPC] RequestVote Args: %+v Raft: %+v\n", args, r)
+	fmt.Printf("[RPC] RequestVote Args: %+v\n", args)
 
-	if r.CurrentTerm > args.Term {
+	reply.Term = r.CurrentTerm()
+
+	if r.CurrentTerm() > args.Term {
 		reply.VoteGranted = false
-		reply.Term = r.CurrentTerm
-		return nil
-	} else if r.CurrentTerm < args.Term && r.IsCandidate() {
-		r.CurrentTerm = args.Term
-		r.Role = Follower
-	}
+	} else if r.CurrentTerm() < args.Term && r.IsCandidate() {
+		r.SetCurrentTerm(args.Term)
+		r.SetRole(Follower)
+		reply.VoteGranted = false
+	} else if
 
 	return nil
 }
 
 func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
-	fmt.Printf("[RPC] AppendEntries Args: %+v Raft: %+v\n", args, r)
+	fmt.Printf("[RPC] AppendEntries Args: %+v\n", args)
 
-	if args.Term < r.CurrentTerm {
+	if args.Term < r.CurrentTerm() {
 		reply.Success = false
-		reply.Term = r.CurrentTerm
+		reply.Term = r.CurrentTerm()
 		return nil
 	}
 
@@ -71,7 +72,7 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 }
 
 func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) error {
-	fmt.Printf("[RPC] InstallSnapshot Args: %+v Raft: %+v\n", args, r)
+	fmt.Printf("[RPC] InstallSnapshot Args: %+v\n", args)
 
 	return nil
 }

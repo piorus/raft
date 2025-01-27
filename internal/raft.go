@@ -17,35 +17,46 @@ const (
 	Candidate Role = "candidate"
 )
 
-type Raft struct {
+type Metadata struct {
 	ServerId    string
 	CurrentTerm int64
 	VotedFor    string
-	logs        []*Log
-	//CommitIndex          int64
-	//LastApplied          int64
-	//NextIndex            []int64
-	//MatchIndex           []int64
-	Role                 Role
+	CommitIndex int64
+	LastApplied int64
+	NextIndex   []int64
+	MatchIndex  []int64
+}
+
+type Configuration struct {
+	Port            string
+	ServerIps       ServerIps
+	electionTimeout time.Duration
+}
+
+type Raft struct {
+	logs                 []*Log
+	role                 Role
+	metadata             *Metadata
+	cfg                  *Configuration
+	db                   DatabaseConn
 	resetElectionTimerCh chan bool
 	startElectionCh      chan bool
-	clients              []*rpc.Client
-	dbConn               DatabaseConn
+	heartbeatCh          chan bool
 }
 
 type Log struct {
 }
 
-func NewRaft(id string, dbConn DatabaseConn) *Raft {
-	resetElectionTimerCh := make(chan bool)
-	startElectionCh := make(chan bool)
-
+func NewRaft(logs []*Log, metadata *Metadata, cfg *Configuration, dbConn DatabaseConn) *Raft {
 	return &Raft{
-		ServerId:             id,
-		Role:                 Follower,
-		resetElectionTimerCh: resetElectionTimerCh,
-		startElectionCh:      startElectionCh,
-		dbConn:               dbConn,
+		logs:                 logs,
+		role:                 Follower,
+		metadata:             metadata,
+		cfg:                  cfg,
+		db:                   dbConn,
+		resetElectionTimerCh: make(chan bool),
+		startElectionCh:      make(chan bool),
+		heartbeatCh:          make(chan bool),
 	}
 }
 
@@ -53,16 +64,33 @@ func withRandomOffset(duration time.Duration) time.Duration {
 	return duration + (time.Duration(rand.Intn(150)) * time.Millisecond)
 }
 
-func (r *Raft) StartElectionTimer(electionTimeout time.Duration) {
-	timer := time.NewTimer(withRandomOffset(electionTimeout))
+func (r *Raft) CurrentTerm() int64 {
+	return r.metadata.CurrentTerm
+}
+
+func (r *Raft) SetCurrentTerm(currentTerm int64) {
+	r.metadata.CurrentTerm = currentTerm
+}
+
+func (r *Raft) SetRole(role Role) {
+	r.role = role
+}
+
+func (r *Raft) SetVotedFor(votedVor string) {
+	r.metadata.VotedFor = votedVor
+}
+
+func (r *Raft) StartElectionTimer() {
+	timer := time.NewTimer(withRandomOffset(r.cfg.electionTimeout))
 	for {
 		select {
 		case <-timer.C:
-			fmt.Printf("[%s] election timeout\n", r.ServerId)
+			fmt.Printf("election timeout, starting voting\n")
 			r.startElectionCh <- true
 			return
 		case <-r.resetElectionTimerCh:
-			timer.Reset(withRandomOffset(electionTimeout))
+			fmt.Printf("reset election timer\n")
+			timer.Reset(withRandomOffset(r.cfg.electionTimeout))
 		}
 	}
 }
@@ -74,50 +102,96 @@ func (r *Raft) WaitForElection() {
 	}
 }
 
+func DoRequestVote(serverIp string, args *RequestVoteArgs, replyCh chan<- *RequestVoteReply) {
+	client, err := rpc.DialHTTP("tcp", serverIp)
+	reply := RequestVoteReply{}
+
+	if err != nil {
+		log.Printf("error dialing %s. Error was: %s\n", serverIp, err)
+		replyCh <- &reply
+		return
+	}
+	fmt.Printf("successfully dialed %s\n", serverIp)
+	err = client.Call("Raft.RequestVote", &args, &reply)
+	if err != nil {
+		log.Printf("RequestVote error: %s\n", err.Error())
+	}
+	replyCh <- &reply
+}
+
+func DoAppendEntries(serverIp string, args *AppendEntriesArgs, replyCh chan<- AppendEntriesReply) {
+	client, err := rpc.DialHTTP("tcp", serverIp)
+	reply := AppendEntriesReply{}
+
+	if err != nil {
+		log.Printf("error dialing %s. Error was: %s\n", serverIp, err)
+		replyCh <- reply
+		return
+	}
+	fmt.Printf("successfully dialed %s\n", serverIp)
+	err = client.Call("Raft.AppendEntries", &args, &reply)
+	if err != nil {
+		log.Printf("AppendEntries error: %s\n", err.Error())
+	}
+	replyCh <- reply
+}
+
+func (r *Raft) DoHeartbeat(serverIp string) {
+	DoAppendEntries(serverIp, &AppendEntriesArgs{Term: r.metadata.CurrentTerm, LeaderId: r.metadata.ServerId}, make(chan<- AppendEntriesReply))
+}
+
 func (r *Raft) StartElection() {
 	fmt.Printf("starting new election\n")
-	r.CurrentTerm += 1
-	r.Role = Candidate
-	r.VotedFor = r.ServerId
+	r.SetCurrentTerm(r.CurrentTerm() + 1)
+	r.SetRole(Candidate)
+	r.SetVotedFor(r.metadata.ServerId)
 
-	args := RequestVoteArgs{Term: r.CurrentTerm}
-	numClients := len(r.clients)
-	majorityRequired := int(math.Floor(float64(numClients) / 2))
-	// already voted for itself
-	numVotes := 1
+	args := RequestVoteArgs{Term: r.metadata.CurrentTerm}
+	repliesCh := make(chan *RequestVoteReply, len(r.cfg.ServerIps))
 
-	for _, client := range r.clients {
-		reply := RequestVoteReply{}
-		// TODO: parallel
-		err := client.Call("Raft.RequestVote", &args, &reply)
-		if err != nil {
-			log.Printf("RequestVote error: %s\n", err.Error())
-			continue
-		}
+	for _, ip := range r.cfg.ServerIps {
+		go DoRequestVote(ip, &args, repliesCh)
+	}
+
+	numClients := len(r.cfg.ServerIps)
+	quorum := int(math.Ceil(float64(numClients) / 2))
+	numVotes := 1 // cuz voted for itself
+
+	for reply := range repliesCh {
 		if reply.VoteGranted {
 			numVotes += 1
 		}
-		if numVotes >= majorityRequired {
-			r.Role = Leader
-			break
+		if numVotes >= quorum {
+			r.SetRole(Leader)
+			fmt.Printf("[%s] elected as a leader\n", r.cfg.Port)
 		}
 	}
+	close(repliesCh)
 
-	go r.StartElectionTimer(1000 * time.Millisecond)
+	if !r.IsLeader() {
+		go r.StartElectionTimer()
+	} else {
+		go r.StartHeartbeat()
+	}
+}
+
+func (r *Raft) StartHeartbeat() {
+	for {
+		for _, serverIp := range r.cfg.ServerIps {
+			go r.DoHeartbeat(serverIp)
+		}
+		time.Sleep(r.cfg.electionTimeout / 3)
+	}
 }
 
 func (r *Raft) IsCandidate() bool {
-	return r.Role == Candidate
+	return r.role == Candidate
 }
 
 func (r *Raft) IsFollower() bool {
-	return r.Role == Follower
+	return r.role == Follower
 }
 
 func (r *Raft) IsLeader() bool {
-	return r.Role == Leader
+	return r.role == Leader
 }
-
-//func (r * Raft) TriggerRequestVoteRequest(args *RequestVoteArgs) {
-//
-//}
