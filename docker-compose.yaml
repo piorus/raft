@@ -1,35 +1,4 @@
 services:
-  etcd-1:
-    image: quay.io/coreos/etcd:v3.5.0
-    command: [ "etcd", "--data-dir=/etcd-data", "--log-level=error"]
-    volumes:
-      - etcd-1:/etcd-data
-    container_name: raft-etcd-1
-  etcd-2:
-    image: quay.io/coreos/etcd:v3.5.0
-    command: [ "etcd", "--data-dir=/etcd-data", "--log-level=error"]
-    volumes:
-      - etcd-2:/etcd-data
-    container_name: raft-etcd-2
-  etcd-3:
-    image: quay.io/coreos/etcd:v3.5.0
-    command: [ "etcd", "--data-dir=/etcd-data", "--log-level=error"]
-    volumes:
-      - etcd-3:/etcd-data
-    container_name: raft-etcd-3
-  etcd-4:
-    image: quay.io/coreos/etcd:v3.5.0
-    command: [ "etcd", "--data-dir=/etcd-data", "--log-level=error"]
-    volumes:
-      - etcd-4:/etcd-data
-    container_name: raft-etcd-4
-  etcd-5:
-    image: quay.io/coreos/etcd:v3.5.0
-    command: [ "etcd", "--data-dir=/etcd-data", "--log-level=error"]
-    volumes:
-      - etcd-5:/etcd-data
-    container_name: raft-etcd-5
-
   server-1:
     build:
       context: .
@@ -37,54 +6,66 @@ services:
     image: raft:latest
     environment:
       - ELECTION_TIMEOUT=1s
-      - ETCD_ENDPOINT=http://etcd-1:2379
-    depends_on:
-      - etcd-1
+      - SERVERS=raft-server-2:1234,raft-server-3:1234,raft-server-4:1234,raft-server-5:1234
     container_name: raft-server-1
-
+    networks:
+      - raft-network
+    volumes:
+      - raft-1:/root/data
   server-2:
     image: raft:latest
     environment:
       - ELECTION_TIMEOUT=1s
-      - ETCD_ENDPOINT=http://etcd-2:2379
+      - SERVERS=raft-server-1:1234,raft-server-3:1234,raft-server-4:1234,raft-server-5:1234
     depends_on:
-      - etcd-2
       - server-1
     container_name: raft-server-2
-
+    networks:
+      - raft-network
+    volumes:
+      - raft-2:/root/data
   server-3:
     image: raft:latest
     environment:
       - ELECTION_TIMEOUT=1s
-      - ETCD_ENDPOINT=http://etcd-3:2379
+      - SERVERS=raft-server-1:1234,raft-server-2:1234,raft-server-4:1234,raft-server-5:1234
     depends_on:
-      - etcd-3
       - server-1
     container_name: raft-server-3
-
+    networks:
+      - raft-network
+    volumes:
+      - raft-3:/root/data
   server-4:
     image: raft:latest
     environment:
       - ELECTION_TIMEOUT=1s
-      - ETCD_ENDPOINT=http://etcd-4:2379
+      - SERVERS=raft-server-1:1234,raft-server-2:1234,raft-server-3:1234,raft-server-5:1234
     depends_on:
-      - etcd-4
       - server-1
     container_name: raft-server-4
-
+    networks:
+      - raft-network
+    volumes:
+      - raft-4:/root/data
   server-5:
     image: raft:latest
     environment:
       - ELECTION_TIMEOUT=1s
-      - ETCD_ENDPOINT=http://etcd-5:2379
+      - SERVERS=raft-server-1:1234,raft-server-2:1234,raft-server-3:1234,raft-server-4:1234
     depends_on:
-      - etcd-5
       - server-1
     container_name: raft-server-5
-
+    networks:
+      - raft-network
+    volumes:
+      - raft-5:/root/data
 volumes:
-  etcd-1:
-  etcd-2:
-  etcd-3:
-  etcd-4:
-  etcd-5:
+  raft-1:
+  raft-2:
+  raft-3:
+  raft-4:
+  raft-5:
+
+networks:
+  raft-network:

@@ -12,7 +12,6 @@ import (
 func startServer(port string) error {
 	rpc.HandleHTTP()
 
-	fmt.Printf("starting server :%s\n", port)
 	l, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		return err
@@ -28,16 +27,23 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	repo, err := internal.NewBoltRepository(fmt.Sprintf("log-%s.db", cfg.Port))
+	repo, err := internal.NewBoltRepository("data/log.db")
 	if err != nil {
-		log.Fatalln("failed to create BoltRepository. Error was:", err)
+		log.Fatalln("failed to initialize bolt:", err)
 	}
-	defer repo.Cleanup()
 
 	var logs []*internal.Log
 	metadata, err := repo.GetMetadata()
+
 	if err != nil {
-		log.Fatalln("failed to get metadata. err: ", err)
+		log.Fatalln("failed to load metadata:", err)
+	}
+
+	// needed for the first run to ensure that kvs are properly stored in bolt
+	fmt.Printf("saving metadata\n")
+	err = repo.SaveMetadata(metadata)
+	if err != nil {
+		log.Fatalln("failed to save metadata:", err)
 	}
 
 	raft := internal.NewRaft(logs, metadata, cfg, repo)
@@ -49,6 +55,6 @@ func main() {
 	}
 
 	if err = startServer(cfg.Port); err != nil {
-		log.Fatalln("failed to start rpc server, error was: ", err)
+		log.Fatalln("server crashed:", err)
 	}
 }

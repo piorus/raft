@@ -20,12 +20,8 @@ func (s *ServerIps) String() string {
 }
 
 func ParseConfiguration() (*Configuration, error) {
-	var serverIps ServerIps
 	var port string
-
-	flag.Var(&serverIps, "servers", "server ips")
 	flag.StringVar(&port, "port", "", "Port")
-
 	flag.Parse()
 
 	if port == "" {
@@ -44,5 +40,12 @@ func ParseConfiguration() (*Configuration, error) {
 		return nil, err
 	}
 
-	return &Configuration{Port: port, ServerIps: serverIps, electionTimeout: electionTimeout}, nil
+	serversRaw := os.Getenv("SERVERS")
+	var servers []string
+
+	if serversRaw != "" {
+		servers = strings.Split(serversRaw, ",")
+	}
+
+	return &Configuration{Port: port, Servers: servers, electionTimeout: electionTimeout}, nil
 }

@@ -29,7 +29,7 @@ type Metadata struct {
 
 type Configuration struct {
 	Port            string
-	ServerIps       ServerIps
+	Servers         []string
 	electionTimeout time.Duration
 }
 
@@ -165,13 +165,13 @@ func (r *Raft) StartElection() {
 	r.SetVotedFor(r.ServerId())
 
 	args := RequestVoteArgs{Term: r.metadata.CurrentTerm}
-	repliesCh := make(chan *RequestVoteReply, len(r.cfg.ServerIps))
+	repliesCh := make(chan *RequestVoteReply, len(r.cfg.Servers))
 
-	for _, ip := range r.cfg.ServerIps {
-		go DoRequestVote(ip, &args, repliesCh)
+	for _, serverIp := range r.cfg.Servers {
+		go DoRequestVote(serverIp, &args, repliesCh)
 	}
 
-	numClients := len(r.cfg.ServerIps)
+	numClients := len(r.cfg.Servers)
 	quorum := int(math.Ceil(float64(numClients) / 2))
 	numVotes := 1 // voted for itself
 
@@ -214,7 +214,7 @@ func (r *Raft) StartHeartbeat() {
 	fmt.Printf("starting heartbeat\n")
 	for {
 		fmt.Printf("heartbeat\n")
-		for _, serverIp := range r.cfg.ServerIps {
+		for _, serverIp := range r.cfg.Servers {
 			go r.DoHeartbeat(serverIp)
 		}
 		time.Sleep(r.cfg.electionTimeout / 2)
