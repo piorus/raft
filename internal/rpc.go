@@ -52,7 +52,10 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error
 		r.SetCurrentTerm(args.Term)
 		r.SetRole(Follower)
 		reply.VoteGranted = false
-	} else if
+	} else if r.VotedFor() == args.CandidateId || r.VotedFor() == "" {
+		reply.VoteGranted = true
+		r.SetVotedFor(args.CandidateId)
+	}
 
 	return nil
 }

@@ -1,0 +1,10 @@
+version: '3.9'
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: raft:latest
+    environment:
+      - ELECTION_TIMEOUT=1s

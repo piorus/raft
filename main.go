@@ -7,19 +7,18 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
-	"time"
 )
 
-func startServer(port string, errChan chan<- error) {
+func startServer(port string) error {
+	rpc.HandleHTTP()
+
 	fmt.Printf("starting server :%s\n", port)
 	l, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		fmt.Printf("err: %s\n", err.Error())
-		errChan <- err
-		return
+		return err
 	}
 	fmt.Printf("listening on :%s\n", port)
-	errChan <- http.Serve(l, nil)
+	return http.Serve(l, nil)
 }
 
 func main() {
@@ -29,35 +28,27 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	dbConn, err := internal.NewBoltDatabaseConn(fmt.Sprintf("log-%s.db", cfg.Port))
+	repo, err := internal.NewBoltRepository(fmt.Sprintf("log-%s.db", cfg.Port))
 	if err != nil {
-		log.Fatalln("failed to create BoltDatabaseConn. Error was:", err)
+		log.Fatalln("failed to create BoltRepository. Error was:", err)
 	}
-
-	serverId, err := dbConn.GetServerId()
-	if err != nil {
-		log.Fatalln(err)
-	}
+	defer repo.Cleanup()
 
 	var logs []*internal.Log
-	metadata := internal.Metadata{}
+	metadata, err := repo.GetMetadata()
+	if err != nil {
+		log.Fatalln("failed to get metadata. err: ", err)
+	}
 
-	raft := internal.NewRaft(logs, &metadata, cfg, dbConn)
+	raft := internal.NewRaft(logs, metadata, cfg, repo)
 	go raft.StartElectionTimer()
 	go raft.WaitForElection()
 
-	err = rpc.Register(raft)
-	if err != nil {
+	if err = rpc.Register(raft); err != nil {
 		log.Fatalln(err)
 	}
-	rpc.HandleHTTP()
 
-	errChan := make(chan error)
-	go startServer(cfg.Port, errChan)
-	time.Sleep(time.Millisecond * 1500)
-
-	err = <-errChan
-	if err != nil {
+	if err = startServer(cfg.Port); err != nil {
 		log.Fatalln("failed to start rpc server, error was: ", err)
 	}
 }

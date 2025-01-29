@@ -38,7 +38,7 @@ type Raft struct {
 	role                 Role
 	metadata             *Metadata
 	cfg                  *Configuration
-	db                   DatabaseConn
+	repo                 Repository
 	resetElectionTimerCh chan bool
 	startElectionCh      chan bool
 	heartbeatCh          chan bool
@@ -47,13 +47,13 @@ type Raft struct {
 type Log struct {
 }
 
-func NewRaft(logs []*Log, metadata *Metadata, cfg *Configuration, dbConn DatabaseConn) *Raft {
+func NewRaft(logs []*Log, metadata *Metadata, cfg *Configuration, repo Repository) *Raft {
 	return &Raft{
 		logs:                 logs,
 		role:                 Follower,
 		metadata:             metadata,
 		cfg:                  cfg,
-		db:                   dbConn,
+		repo:                 repo,
 		resetElectionTimerCh: make(chan bool),
 		startElectionCh:      make(chan bool),
 		heartbeatCh:          make(chan bool),
@@ -70,14 +70,32 @@ func (r *Raft) CurrentTerm() int64 {
 
 func (r *Raft) SetCurrentTerm(currentTerm int64) {
 	r.metadata.CurrentTerm = currentTerm
+	if err := r.repo.SaveMetadata(r.metadata); err != nil {
+		panic(err)
+	}
+}
+
+func (r *Raft) Role() Role {
+	return r.role
 }
 
 func (r *Raft) SetRole(role Role) {
 	r.role = role
 }
 
+func (r *Raft) VotedFor() string {
+	return r.metadata.VotedFor
+}
+
 func (r *Raft) SetVotedFor(votedVor string) {
 	r.metadata.VotedFor = votedVor
+	if err := r.repo.SaveMetadata(r.metadata); err != nil {
+		panic(err)
+	}
+}
+
+func (r *Raft) ServerId() string {
+	return r.metadata.ServerId
 }
 
 func (r *Raft) StartElectionTimer() {
@@ -85,7 +103,7 @@ func (r *Raft) StartElectionTimer() {
 	for {
 		select {
 		case <-timer.C:
-			fmt.Printf("election timeout, starting voting\n")
+			fmt.Printf("election timeout\n")
 			r.startElectionCh <- true
 			return
 		case <-r.resetElectionTimerCh:
@@ -144,7 +162,7 @@ func (r *Raft) StartElection() {
 	fmt.Printf("starting new election\n")
 	r.SetCurrentTerm(r.CurrentTerm() + 1)
 	r.SetRole(Candidate)
-	r.SetVotedFor(r.metadata.ServerId)
+	r.SetVotedFor(r.ServerId())
 
 	args := RequestVoteArgs{Term: r.metadata.CurrentTerm}
 	repliesCh := make(chan *RequestVoteReply, len(r.cfg.ServerIps))
@@ -155,32 +173,51 @@ func (r *Raft) StartElection() {
 
 	numClients := len(r.cfg.ServerIps)
 	quorum := int(math.Ceil(float64(numClients) / 2))
-	numVotes := 1 // cuz voted for itself
+	numVotes := 1 // voted for itself
 
-	for reply := range repliesCh {
-		if reply.VoteGranted {
-			numVotes += 1
+	if numClients > 0 {
+		timer := time.NewTimer(100 * time.Millisecond)
+		numRemainingRetries := 3
+		retryLimitReached := false
+
+		for !retryLimitReached {
+			select {
+			case reply := <-repliesCh:
+				if reply.VoteGranted {
+					numVotes += 1
+				}
+				timer.Reset(100 * time.Millisecond)
+			case <-timer.C:
+				if numRemainingRetries == 0 {
+					retryLimitReached = true
+				}
+				numRemainingRetries -= 1
+			}
 		}
-		if numVotes >= quorum {
-			r.SetRole(Leader)
-			fmt.Printf("[%s] elected as a leader\n", r.cfg.Port)
-		}
+		close(repliesCh)
 	}
-	close(repliesCh)
 
-	if !r.IsLeader() {
-		go r.StartElectionTimer()
-	} else {
+	fmt.Printf("numVotes = %d, quorum = %d\n", numVotes, quorum)
+	if numVotes >= quorum {
+		r.SetRole(Leader)
+		fmt.Printf("[%s] elected as a leader\n", r.cfg.Port)
+	}
+
+	if r.IsLeader() {
 		go r.StartHeartbeat()
+	} else {
+		go r.StartElectionTimer()
 	}
 }
 
 func (r *Raft) StartHeartbeat() {
+	fmt.Printf("starting heartbeat\n")
 	for {
+		fmt.Printf("heartbeat\n")
 		for _, serverIp := range r.cfg.ServerIps {
 			go r.DoHeartbeat(serverIp)
 		}
-		time.Sleep(r.cfg.electionTimeout / 3)
+		time.Sleep(r.cfg.electionTimeout / 2)
 	}
 }
 
