@@ -1,8 +1,11 @@
 package internal
 
 import (
+	"context"
+	"fmt"
 	"github.com/google/uuid"
-	bolt "go.etcd.io/bbolt"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"os"
 	"strconv"
 	"time"
 )
@@ -14,142 +17,99 @@ type Repository interface {
 	SaveLog(index int64, log Log) error
 }
 
-type BoltRepository struct {
-	db *bolt.DB
+type EtcdRepository struct {
+	client *clientv3.Client
 }
 
-func NewBoltRepository(path string) (*BoltRepository, error) {
-	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second})
+func NewEtcdRepository() (*EtcdRepository, error) {
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{os.Getenv("ETCD_ENDPOINT")},
+		DialTimeout: time.Second,
+	})
+	return &EtcdRepository{client: client}, err
+}
+
+func (er *EtcdRepository) GetMetadata() (*Metadata, error) {
+	ctx, _ := context.WithTimeout(context.Background(), time.Second)
+	resp, err := er.client.Get(ctx, "raft/metadata")
+	//cancel()
 	if err != nil {
 		return nil, err
 	}
-	//defer db.Close()
-	return &BoltRepository{db: db}, nil
-}
 
-func (bp *BoltRepository) Cleanup() {
-	bp.db.Close()
-}
+	metadata := &Metadata{ServerId: uuid.New().String()}
 
-func GetStringValueFromBucket(key string, bucket *bolt.Bucket) (string, error) {
-	value := bucket.Get([]byte(key))
+	fmt.Println(resp.Kvs)
 
-	if value == nil {
-		err := bucket.Put([]byte(key), []byte(""))
-		return "", err
+	for _, kv := range resp.Kvs {
+		switch string(kv.Key) {
+		case "raft/metadata/server-id":
+			metadata.ServerId = string(kv.Value)
+		case "raft/metadata/current-term":
+			val, _ := strconv.Atoi(string(kv.Value))
+			metadata.CurrentTerm = int64(val)
+		case "raft/metadata/voted-for":
+			metadata.VotedFor = string(kv.Value)
+		case "raft/metadata/commit-index":
+			val, _ := strconv.Atoi(string(kv.Value))
+			metadata.CommitIndex = int64(val)
+		case "raft/metadata/last-applied":
+			val, _ := strconv.Atoi(string(kv.Value))
+			metadata.LastApplied = int64(val)
+		}
 	}
 
-	return string(value), nil
+	return metadata, nil
 }
 
-func GetInt64ValueFromBucket(key string, bucket *bolt.Bucket) (int64, error) {
-	value := bucket.Get([]byte(key))
-
-	if value == nil {
-		err := bucket.Put([]byte(key), []byte("0"))
-		return 0, err
-	}
-
-	number, err := strconv.Atoi(string(value))
+func (er *EtcdRepository) SaveMetadata(metadata *Metadata) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	resp, err := er.client.Put(ctx, "raft/metadata/server-id", metadata.ServerId)
+	cancel()
+	fmt.Println(resp)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
-	return int64(number), nil
+	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	resp, err = er.client.Put(ctx, "raft/metadata/current-term", strconv.Itoa(int(metadata.CurrentTerm)))
+	cancel()
+	fmt.Println(resp)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	_, err = er.client.Put(context.TODO(), "raft/metadata/voted-for", metadata.VotedFor)
+	cancel()
+	fmt.Println(resp)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	_, err = er.client.Put(context.TODO(), "raft/metadata/commit-index", strconv.Itoa(int(metadata.CommitIndex)))
+	cancel()
+	fmt.Println(resp)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	_, err = er.client.Put(context.TODO(), "raft/metadata/last-applied", strconv.Itoa(int(metadata.LastApplied)))
+	cancel()
+	fmt.Println(resp)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (bp *BoltRepository) GetMetadata() (*Metadata, error) {
-	var metadata Metadata
-
-	err := bp.db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte("RaftMetadata"))
-		if err != nil {
-			return err
-		}
-
-		serverId := bucket.Get([]byte("serverId"))
-
-		if serverId != nil {
-			metadata.ServerId = string(serverId)
-		} else {
-			newUuid, err := uuid.NewUUID()
-			if err != nil {
-				return err
-			}
-
-			err = bucket.Put([]byte("serverId"), []byte(newUuid.String()))
-			if err != nil {
-				return err
-			}
-			metadata.ServerId = newUuid.String()
-		}
-
-		metadata.CurrentTerm, err = GetInt64ValueFromBucket("currentTerm", bucket)
-		if err != nil {
-			return err
-		}
-
-		metadata.VotedFor, err = GetStringValueFromBucket("votedFor", bucket)
-		if err != nil {
-			return err
-		}
-
-		metadata.CommitIndex, err = GetInt64ValueFromBucket("commitIndex", bucket)
-		if err != nil {
-			return err
-		}
-
-		metadata.LastApplied, err = GetInt64ValueFromBucket("lastApplied", bucket)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	return &metadata, err
+func (er *EtcdRepository) GetLogs() ([]*Log, error) {
+	return []*Log{}, nil
 }
 
-func (bp *BoltRepository) SaveMetadata(metadata *Metadata) error {
-	return bp.db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte("RaftMetadata"))
-		if err != nil {
-			return err
-		}
-
-		err = bucket.Put([]byte("serverId"), []byte(metadata.ServerId))
-		if err != nil {
-			return err
-		}
-
-		err = bucket.Put([]byte("currentTerm"), []byte(strconv.Itoa(int(metadata.CurrentTerm))))
-		if err != nil {
-			return err
-		}
-
-		err = bucket.Put([]byte("votedFor"), []byte(metadata.VotedFor))
-		if err != nil {
-			return err
-		}
-
-		err = bucket.Put([]byte("commitIndex"), []byte(strconv.Itoa(int(metadata.CommitIndex))))
-		if err != nil {
-			return err
-		}
-
-		err = bucket.Put([]byte("lastApplied"), []byte(strconv.Itoa(int(metadata.LastApplied))))
-		if err != nil {
-			return err
-		}
-
-		return nil
-	})
-}
-
-func (bp *BoltRepository) GetLogs() ([]*Log, error) {
-	return nil, nil
-}
-
-func (bp *BoltRepository) SaveLog(index int64, log Log) error {
+func (er *EtcdRepository) SaveLog(index int64, log Log) error {
 	return nil
 }
